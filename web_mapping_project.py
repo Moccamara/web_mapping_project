@@ -149,15 +149,27 @@ with st.sidebar:
     idse_selected = st.selectbox("Unit_Geo", idse_list)
     gdf_idse = gdf_commune if idse_selected=="No filter" else gdf_commune[gdf_commune["idse_new"]==idse_selected]
 
-    # Spatial Query (Admin only)
+    # =========================================================
+    # SPATIAL QUERY (Admin only)
+    # =========================================================
     pts_inside_map = None
+    pts_inside_polygon = None
     if st.session_state.user_role=="Admin":
         st.markdown("### 🛰️ Spatial Query")
-        query_type = st.selectbox("Spatial Query Type", ["Points inside selected SE"])
+        query_type = st.selectbox("Spatial Query Type", ["Points inside selected SE", "Points inside drawn polygon"])
         run_query = st.button("Run Spatial Query")
         if run_query and points_gdf is not None:
-            pts_inside_map = safe_sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner")
-            st.success(f"✅ Spatial query returned {len(pts_inside_map)} points inside selected SE.")
+            if query_type=="Points inside selected SE":
+                pts_inside_map = safe_sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner")
+                st.success(f"✅ Spatial query returned {len(pts_inside_map)} points inside selected SE.")
+            elif query_type=="Points inside drawn polygon":
+                st.info("Draw a polygon on the map or upload GeoJSON file")
+                uploaded_geojson = st.file_uploader("Upload drawn polygon (GeoJSON)", type=["geojson"])
+                if uploaded_geojson is not None:
+                    gdf_polygon = gpd.read_file(uploaded_geojson)
+                    gdf_polygon = gdf_polygon.to_crs(points_gdf.crs)
+                    pts_inside_polygon = safe_sjoin(points_gdf, gdf_polygon, predicate="intersects", how="inner")
+                    st.success(f"✅ Spatial query returned {len(pts_inside_polygon)} points inside drawn polygon.")
 
 # =========================================================
 # MAP
@@ -180,8 +192,13 @@ folium.GeoJson(
 ).add_to(m)
 
 # Add points
-points_to_plot = pts_inside_map if (st.session_state.user_role=="Admin" and pts_inside_map is not None) else points_gdf
-if points_to_plot is not None:
+points_to_plot = None
+if st.session_state.user_role=="Admin":
+    points_to_plot = pts_inside_polygon if pts_inside_polygon is not None else pts_inside_map
+else:
+    points_to_plot = points_gdf
+
+if points_to_plot is not None and not points_to_plot.empty:
     points_to_plot = points_to_plot.to_crs(gdf_idse.crs)
     for _, r in points_to_plot.iterrows():
         folium.CircleMarker(location=[r.geometry.y,r.geometry.x], radius=3,
