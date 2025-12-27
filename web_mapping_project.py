@@ -28,8 +28,7 @@ if "auth_ok" not in st.session_state:
     st.session_state.auth_ok = False
     st.session_state.username = None
     st.session_state.user_role = None
-    st.session_state.points_gdf = None  # store uploaded CSV points
-    st.session_state.query_result = None
+    st.session_state.points_gdf = None
 
 # =========================================================
 # LOGOUT
@@ -39,7 +38,6 @@ def logout():
     st.session_state.username = None
     st.session_state.user_role = None
     st.session_state.points_gdf = None
-    st.session_state.query_result = None
     st.rerun()
 
 # =========================================================
@@ -113,7 +111,7 @@ idse_selected = st.sidebar.selectbox("Unit_Geo", idse_list)
 gdf_idse = gdf_commune if idse_selected == "No filter" else gdf_commune[gdf_commune["idse_new"] == idse_selected]
 
 # =========================================================
-# LOAD POINTS
+# LOAD POINTS FROM GITHUB
 # =========================================================
 POINTS_URL = "https://raw.githubusercontent.com/Moccamara/web_mapping/master/data/concession.csv"
 
@@ -134,57 +132,35 @@ def load_points_from_github(url):
     except:
         return None
 
+# =========================================================
+# POINTS SOURCE LOGIC
+# =========================================================
 points_gdf = st.session_state.points_gdf if st.session_state.points_gdf is not None else load_points_from_github(POINTS_URL)
 
 # =========================================================
-# SPATIAL QUERY SIDEBAR
+# SPATIAL QUERY
 # =========================================================
-st.sidebar.markdown("### 🧭 Spatial Query")
+st.sidebar.markdown("### 🗺️ Spatial Query")
 query_type = st.sidebar.selectbox(
     "Select query type",
-    ["Intersects", "Within", "Contains"]
+    ["intersects", "within", "contains"],
+    index=0
 )
-if st.sidebar.button("Run Query"):
-    if points_gdf is not None:
-        points_gdf = points_gdf.to_crs(gdf_idse.crs)
-        if query_type == "Intersects":
-            st.session_state.query_result = gpd.sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner")
-        elif query_type == "Within":
-            st.session_state.query_result = gpd.sjoin(points_gdf, gdf_idse, predicate="within", how="inner")
-        elif query_type == "Contains":
-            st.session_state.query_result = gpd.sjoin(points_gdf, gdf_idse, predicate="contains", how="inner")
-        if st.session_state.query_result.empty:
-            st.sidebar.warning("No points match the query.")
-        else:
-            st.sidebar.success(f"{len(st.session_state.query_result)} points match the query")
-    else:
-        st.sidebar.error("No points available for the query.")
+run_query = st.sidebar.button("Run Spatial Query")
 
-# =========================================================
-# CSV UPLOAD (ADMIN ONLY)
-# =========================================================
-if st.session_state.user_role == "Admin":
-    st.sidebar.markdown("### 📥 Upload CSV Points (Admin)")
-    csv_file = st.sidebar.file_uploader("Upload CSV", type=["csv"], key="admin_csv")
-    if csv_file is not None:
-        try:
-            df_csv = pd.read_csv(csv_file)
-            required_cols = {"LAT", "LON"}
-            if not required_cols.issubset(df_csv.columns):
-                st.sidebar.error("CSV must contain LAT and LON columns")
-            else:
-                df_csv["LAT"] = pd.to_numeric(df_csv["LAT"], errors="coerce")
-                df_csv["LON"] = pd.to_numeric(df_csv["LON"], errors="coerce")
-                df_csv = df_csv.dropna(subset=["LAT", "LON"])
-                points_gdf = gpd.GeoDataFrame(
-                    df_csv,
-                    geometry=gpd.points_from_xy(df_csv["LON"], df_csv["LAT"]),
-                    crs="EPSG:4326"
-                )
-                st.session_state.points_gdf = points_gdf
-                st.sidebar.success(f"✅ {len(points_gdf)} points loaded")
-        except Exception as e:
-            st.sidebar.error("Failed to read CSV file")
+spatial_query_points = None
+if run_query and points_gdf is not None:
+    gdf_idse_simple = gdf_idse.explode(ignore_index=True)
+    spatial_query_points = gpd.sjoin(
+        points_gdf,
+        gdf_idse_simple,
+        predicate=query_type,
+        how="inner"
+    )
+    st.sidebar.success(f"{len(spatial_query_points)} points found using '{query_type}' query")
+
+# Points to display on map and in charts
+points_to_use = spatial_query_points if spatial_query_points is not None else points_gdf
 
 # =========================================================
 # MAP
@@ -205,10 +181,11 @@ folium.GeoJson(
     tooltip=folium.GeoJsonTooltip(fields=["idse_new","pop_se","pop_se_ct"])
 ).add_to(m)
 
-# Use query result if exists, else default points
-display_points = st.session_state.query_result if st.session_state.query_result is not None else points_gdf
-if display_points is not None:
-    for _, r in display_points.iterrows():
+# Add points to map
+if points_to_use is not None:
+    points_to_use = points_to_use.to_crs(gdf_idse.crs)
+    pts_inside_map = gpd.sjoin(points_to_use, gdf_idse, predicate="intersects", how="inner")
+    for _, r in pts_inside_map.iterrows():
         folium.CircleMarker(
             location=[r.geometry.y, r.geometry.x],
             radius=3,
@@ -243,7 +220,7 @@ with col_chart:
             var_name="Variable",
             value_name="Population"
         )
-        df_long["Variable"] = df_long["Variable"].replace({"pop_se":"Pop SE","pop_se_ct":"Current Pop"})
+        df_long["Variable"] = df_long["Variable"].replace({"pop_se":"Pop SE","pop_se_ct":"Pop Actu"})
         chart = (
             alt.Chart(df_long)
             .mark_bar()
@@ -260,13 +237,13 @@ with col_chart:
 
         # ----------------- Sex Pie Chart -----------------
         st.subheader("👥 Sex (M / F)")
-        if points_gdf is None:
-            st.info("Upload CSV file to view Sex distribution.")
+        if points_to_use is None:
+            st.info("No points to display.")
         else:
-            points_gdf.columns = points_gdf.columns.str.strip()
-            if {"Masculin","Feminin"}.issubset(points_gdf.columns):
+            points_to_use.columns = points_to_use.columns.str.strip()
+            if {"Masculin","Feminin"}.issubset(points_to_use.columns):
                 gdf_idse_simple = gdf_idse.explode(ignore_index=True)
-                pts_inside = gpd.sjoin(points_gdf, gdf_idse_simple, predicate="intersects", how="inner")
+                pts_inside = gpd.sjoin(points_to_use, gdf_idse_simple, predicate="intersects", how="inner")
                 if pts_inside.empty:
                     st.warning("No points inside the selected SE.")
                     m_total, f_total = 0, 0
