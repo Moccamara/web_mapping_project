@@ -6,6 +6,7 @@ from folium.plugins import MeasureControl, Draw
 import pandas as pd
 import altair as alt
 import matplotlib.pyplot as plt
+from shapely.geometry import shape
 
 # =========================================================
 # APP CONFIG
@@ -29,6 +30,7 @@ if "auth_ok" not in st.session_state:
     st.session_state.username = None
     st.session_state.user_role = None
     st.session_state.points_gdf = None
+    st.session_state.drawn_polygon = None  # For drawn polygons
 
 # =========================================================
 # LOGOUT
@@ -38,6 +40,7 @@ def logout():
     st.session_state.username = None
     st.session_state.user_role = None
     st.session_state.points_gdf = None
+    st.session_state.drawn_polygon = None
     st.experimental_rerun()
 
 # =========================================================
@@ -187,17 +190,23 @@ if points_to_plot is not None:
         folium.CircleMarker(location=[r.geometry.y,r.geometry.x], radius=3,
                             color="red", fill=True, fill_opacity=0.8).add_to(m)
 
+# Add map controls
 MeasureControl().add_to(m)
 Draw(export=True).add_to(m)
 folium.LayerControl(collapsed=True).add_to(m)
 
 # =========================================================
+# DISPLAY MAP AND CAPTURE DRAWN POLYGON
+# =========================================================
+map_data = st_folium(m, height=500, returned_objects=["all_drawings"], use_container_width=True)
+if map_data and "all_drawings" in map_data and map_data["all_drawings"]:
+    for feature in map_data["all_drawings"]["features"]:
+        st.session_state.drawn_polygon = shape(feature["geometry"])
+
+# =========================================================
 # LAYOUT
 # =========================================================
 col_map, col_chart = st.columns((3,1), gap="small")
-with col_map:
-    st_folium(m, height=500, use_container_width=True)
-
 with col_chart:
     if idse_selected=="No filter":
         st.info("Select SE.")
@@ -241,13 +250,28 @@ with col_chart:
 
                 fig, ax = plt.subplots(figsize=(3,3))
                 if m_total+f_total > 0:
-                    ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90, textprops={"fontsize":10})
+                    ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90)
                 else:
                     ax.pie([1], labels=["No data"], colors=["lightgrey"])
                 ax.axis("equal")
                 st.pyplot(fig)
-            else:
-                st.warning("CSV must have 'Masculin' and 'Feminin' columns.")
+
+# =========================================================
+# POLYGON-BASED SPATIAL QUERY
+# =========================================================
+if st.session_state.drawn_polygon is not None:
+    st.subheader("🟢 Points inside drawn polygon")
+    pts_in_polygon = points_gdf[points_gdf.geometry.within(st.session_state.drawn_polygon)]
+    if not pts_in_polygon.empty:
+        m_poly = int(pts_in_polygon["Masculin"].sum()) if "Masculin" in pts_in_polygon.columns else 0
+        f_poly = int(pts_in_polygon["Feminin"].sum()) if "Feminin" in pts_in_polygon.columns else 0
+        st.markdown(f"- 👨 **M**: {m_poly}  \n- 👩 **F**: {f_poly}  \n- 👥 **Total**: {m_poly+f_poly}")
+        fig2, ax2 = plt.subplots(figsize=(3,3))
+        ax2.pie([m_poly,f_poly], labels=["M","F"], autopct="%1.1f%%", startangle=90)
+        ax2.axis("equal")
+        st.pyplot(fig2)
+    else:
+        st.info("No points inside drawn polygon.")
 
 # =========================================================
 # FOOTER
