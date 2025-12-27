@@ -43,6 +43,7 @@ def logout():
 # =========================================================
 # LOGIN
 # =========================================================
+# LOGIN
 if not st.session_state.auth_ok:
     st.sidebar.header("🔐 Login")
     username = st.sidebar.selectbox("User", list(USERS.keys()))
@@ -52,10 +53,18 @@ if not st.session_state.auth_ok:
             st.session_state.auth_ok = True
             st.session_state.username = username
             st.session_state.user_role = USERS[username]["role"]
-            st.experimental_rerun()
+            st.stop()  # stops execution; app reruns automatically
         else:
             st.sidebar.error("❌ Incorrect password")
     st.stop()
+
+# LOGOUT
+def logout():
+    st.session_state.auth_ok = False
+    st.session_state.username = None
+    st.session_state.user_role = None
+    st.session_state.points_gdf = None
+    st.stop()  # stops execution after logout
 
 # =========================================================
 # LOAD SE POLYGONS
@@ -261,4 +270,5 @@ st.markdown("""
 **Geospatial Enterprise Web Mapping** Developed with Streamlit, Folium & GeoPandas  
 ** CAMARA, PhD – Geomatics Engineering** © 2025
 """)
+
 
