@@ -198,14 +198,15 @@ folium.LayerControl(collapsed=True).add_to(m)
 # LAYOUT
 # =========================================================
 col_map, col_chart = st.columns((3,1), gap="small")
+
 with col_map:
+    # Display map and capture drawn polygon
     map_data = st_folium(m, height=500, returned_objects=["all_drawings"], use_container_width=True)
 
-    # POLYGON-BASED SPATIAL QUERY PIE
+    # Polygon-based spatial query
     if map_data and "all_drawings" in map_data and map_data["all_drawings"]:
-        from shapely.geometry import shape
-        for feature in map_data["all_drawings"]["features"]:
-            st.session_state.drawn_polygon = shape(feature["geometry"])
+        last_feature = map_data["all_drawings"][-1]
+        st.session_state.drawn_polygon = shape(last_feature["geometry"])
 
     if st.session_state.drawn_polygon is not None:
         st.subheader("🟢 Points inside drawn polygon")
@@ -222,6 +223,7 @@ with col_map:
             st.info("No points inside drawn polygon.")
 
 with col_chart:
+    # Existing SE charts remain unchanged
     if idse_selected=="No filter":
         st.info("Select SE.")
     else:
@@ -272,6 +274,7 @@ with col_chart:
             else:
                 st.warning("CSV must have 'Masculin' and 'Feminin' columns.")
 
+
 # =========================================================
 # FOOTER
 # =========================================================
@@ -280,3 +283,4 @@ st.markdown("""
 **Geospatial Enterprise Web Mapping** Developed with Streamlit, Folium & GeoPandas  
 ** Dr.Mahamadou CAMARA, PhD – Geomatics Engineering** © 2025
 """)
+
