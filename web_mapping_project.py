@@ -38,7 +38,7 @@ def logout():
     st.session_state.username = None
     st.session_state.user_role = None
     st.session_state.points_gdf = None
-    st.rerun()
+    st.experimental_rerun()
 
 # =========================================================
 # LOGIN
@@ -52,7 +52,7 @@ if not st.session_state.auth_ok:
             st.session_state.auth_ok = True
             st.session_state.username = username
             st.session_state.user_role = USERS[username]["role"]
-            st.rerun()
+            st.experimental_rerun()
         else:
             st.sidebar.error("❌ Incorrect password")
     st.stop()
@@ -87,52 +87,19 @@ except Exception:
     st.stop()
 
 # =========================================================
-# SIDEBAR
-# =========================================================
-with st.sidebar:
-    st.image("logo/logo_wgv.png", width=200)
-    st.markdown(f"**Logged in as:** {st.session_state.username} ({st.session_state.user_role})")
-    if st.button("Logout"):
-        logout()
-
-# =========================================================
-# ATTRIBUTE FILTERS
-# =========================================================
-st.sidebar.markdown("### 🗂️ Attribute Query")
-region = st.sidebar.selectbox("Region", sorted(gdf["region"].dropna().unique()))
-gdf_r = gdf[gdf["region"] == region]
-cercle = st.sidebar.selectbox("Cercle", sorted(gdf_r["cercle"].dropna().unique()))
-gdf_c = gdf_r[gdf_r["cercle"] == cercle]
-commune = st.sidebar.selectbox("Commune", sorted(gdf_c["commune"].dropna().unique()))
-gdf_commune = gdf_c[gdf_c["commune"] == commune]
-
-idse_list = ["No filtre"] + sorted(gdf_commune["idse_new"].dropna().unique())
-idse_selected = st.sidebar.selectbox("Unit_Geo", idse_list)
-gdf_idse = gdf_commune if idse_selected == "No filtre" else gdf_commune[gdf_commune["idse_new"] == idse_selected]
-
-# =========================================================
-# SPATIAL QUERY TYPE
-# =========================================================
-st.sidebar.markdown("### 📍 Spatial Query Type")
-spatial_query_type = st.sidebar.selectbox(
-    "Select query type",
-    ["Points inside SE", "Points outside SE"]
-)
-
-# =========================================================
 # LOAD CONCESSION POINTS
 # =========================================================
 POINTS_URL = "https://raw.githubusercontent.com/Moccamara/web_mapping/master/data/concession.csv"
 
 @st.cache_data(show_spinner=False)
-def load_points(url):
+def load_points_from_github(url):
     try:
         df = pd.read_csv(url)
         if not {"LAT", "LON"}.issubset(df.columns):
             return None
         df["LAT"] = pd.to_numeric(df["LAT"], errors="coerce")
         df["LON"] = pd.to_numeric(df["LON"], errors="coerce")
-        df = df.dropna(subset=["LAT", "LON"])
+        df = df.dropna(subset=["LAT","LON"])
         return gpd.GeoDataFrame(
             df,
             geometry=gpd.points_from_xy(df["LON"], df["LAT"]),
@@ -141,43 +108,69 @@ def load_points(url):
     except:
         return None
 
-points_gdf = load_points(POINTS_URL)
+# =========================================================
+# POINTS SOURCE LOGIC
+# =========================================================
+if st.session_state.points_gdf is not None:
+    points_gdf = st.session_state.points_gdf
+else:
+    points_gdf = load_points_from_github(POINTS_URL)
+    st.session_state.points_gdf = points_gdf
 
 # =========================================================
-# SAFE SPATIAL JOIN FUNCTION
+# SAFE SPATIAL JOIN
 # =========================================================
 def safe_sjoin(points, polygons, how="inner", predicate="intersects"):
-    if points is None or polygons is None or points.empty or polygons.empty:
+    if points is None or points.empty or polygons is None or polygons.empty:
         return gpd.GeoDataFrame(columns=points.columns if points is not None else [], crs=points.crs if points is not None else None)
-    if "index_right" in polygons.columns:
-        polygons = polygons.drop(columns=["index_right"])
-    return gpd.sjoin(points, polygons, predicate=predicate, how=how, rsuffix="_r")
+    for col in ["index_right", "_r"]:
+        if col in polygons.columns:
+            polygons = polygons.drop(columns=[col])
+    return gpd.sjoin(points, polygons, how=how, predicate=predicate, rsuffix="_r")
 
 # =========================================================
-# FILTER POINTS BASED ON SPATIAL QUERY TYPE
+# SIDEBAR FILTERS
 # =========================================================
-if points_gdf is not None:
-    points_gdf = points_gdf.to_crs(gdf_idse.crs)
-    if spatial_query_type == "Points inside SE":
-        points_to_use = safe_sjoin(points_gdf, gdf_idse)
-    elif spatial_query_type == "Points outside SE":
-        pts_inside = safe_sjoin(points_gdf, gdf_idse)
-        points_to_use = points_gdf[~points_gdf.index.isin(pts_inside.index)]
-else:
-    points_to_use = gpd.GeoDataFrame(columns=[], crs="EPSG:4326")
+with st.sidebar:
+    st.image("logo/logo_wgv.png", width=200)
+    st.markdown(f"**Logged in as:** {st.session_state.username} ({st.session_state.user_role})")
+    if st.button("Logout"):
+        logout()
+
+    st.markdown("### 🗂️ Attribute Query")
+    region = st.selectbox("Region", sorted(gdf["region"].dropna().unique()))
+    gdf_r = gdf[gdf["region"] == region]
+    cercle = st.selectbox("Cercle", sorted(gdf_r["cercle"].dropna().unique()))
+    gdf_c = gdf_r[gdf_r["cercle"] == cercle]
+    commune = st.selectbox("Commune", sorted(gdf_c["commune"].dropna().unique()))
+    gdf_commune = gdf_c[gdf_c["commune"] == commune]
+
+    idse_list = ["No filter"] + sorted(gdf_commune["idse_new"].dropna().unique())
+    idse_selected = st.selectbox("Unit_Geo", idse_list)
+    gdf_idse = gdf_commune if idse_selected=="No filter" else gdf_commune[gdf_commune["idse_new"]==idse_selected]
+
+    # Spatial Query (Admin only)
+    pts_inside_map = None
+    if st.session_state.user_role=="Admin":
+        st.markdown("### 🛰️ Spatial Query")
+        query_type = st.selectbox("Spatial Query Type", ["Points inside selected SE"])
+        run_query = st.button("Run Spatial Query")
+        if run_query:
+            pts_inside_map = safe_sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner")
+            st.success(f"✅ Spatial query returned {len(pts_inside_map)} points inside selected SE.")
 
 # =========================================================
 # MAP
 # =========================================================
 minx, miny, maxx, maxy = gdf_idse.total_bounds
-m = folium.Map(location=[(miny + maxy)/2, (minx + maxx)/2], zoom_start=18)
+m = folium.Map(location=[(miny+maxy)/2, (minx+maxx)/2], zoom_start=18)
 folium.TileLayer("OpenStreetMap").add_to(m)
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     name="Satellite",
-    attr="Esri",
+    attr="Esri"
 ).add_to(m)
-m.fit_bounds([[miny, minx], [maxy, maxx]])
+m.fit_bounds([[miny,minx],[maxy,maxx]])
 
 folium.GeoJson(
     gdf_idse,
@@ -186,15 +179,17 @@ folium.GeoJson(
     tooltip=folium.GeoJsonTooltip(fields=["idse_new","pop_se","pop_se_ct"])
 ).add_to(m)
 
-# Add filtered points
-for _, r in points_to_use.iterrows():
-    folium.CircleMarker(
-        location=[r.geometry.y, r.geometry.x],
-        radius=3,
-        color="red",
-        fill=True,
-        fill_opacity=0.8
-    ).add_to(m)
+# Add points
+if st.session_state.user_role=="Admin" and pts_inside_map is not None:
+    points_to_plot = pts_inside_map
+else:
+    points_to_plot = points_gdf
+
+if points_to_plot is not None:
+    points_to_plot = points_to_plot.to_crs(gdf_idse.crs)
+    for _, r in points_to_plot.iterrows():
+        folium.CircleMarker(location=[r.geometry.y,r.geometry.x], radius=3,
+                            color="red", fill=True, fill_opacity=0.8).add_to(m)
 
 MeasureControl().add_to(m)
 Draw(export=True).add_to(m)
@@ -204,63 +199,59 @@ folium.LayerControl(collapsed=True).add_to(m)
 # LAYOUT
 # =========================================================
 col_map, col_chart = st.columns((3,1), gap="small")
-
 with col_map:
     st_folium(m, height=500, use_container_width=True)
 
 with col_chart:
-    if idse_selected == "No filtre":
+    if idse_selected=="No filter":
         st.info("Select SE.")
     else:
-        # ----------------- Population Bar Chart -----------------
+        # Population bar chart
         st.subheader("📊 Population")
         df_long = gdf_idse[["idse_new","pop_se","pop_se_ct"]].copy()
         df_long["idse_new"] = df_long["idse_new"].astype(str)
-        df_long = df_long.melt(
-            id_vars="idse_new",
-            value_vars=["pop_se","pop_se_ct"],
-            var_name="Variable",
-            value_name="Population"
-        )
+        df_long = df_long.melt(id_vars="idse_new", value_vars=["pop_se","pop_se_ct"],
+                               var_name="Variable", value_name="Population")
         df_long["Variable"] = df_long["Variable"].replace({"pop_se":"Pop SE","pop_se_ct":"Pop Actu"})
-        chart = (
-            alt.Chart(df_long)
-            .mark_bar()
-            .encode(
-                x=alt.X("idse_new:N", title=None, axis=alt.Axis(labelAngle=0)),
-                xOffset="Variable:N",
-                y=alt.Y("Population:Q", title=None),
-                color=alt.Color("Variable:N", legend=alt.Legend(orient="right", title="Type")),
-                tooltip=["idse_new","Variable","Population"]
-            )
-            .properties(height=150)
-        )
+        chart = (alt.Chart(df_long)
+                 .mark_bar()
+                 .encode(x=alt.X("idse_new:N", title=None, axis=alt.Axis(labelAngle=0)),
+                         xOffset="Variable:N",
+                         y=alt.Y("Population:Q", title=None),
+                         color=alt.Color("Variable:N", legend=alt.Legend(orient="right", title="Type")),
+                         tooltip=["idse_new","Variable","Population"])
+                 .properties(height=150))
         st.altair_chart(chart, use_container_width=True)
 
-        # ----------------- Sex Pie Chart -----------------
+        # Sex pie chart
         st.subheader("👥 Sex (M / F)")
-        if points_to_use.empty:
-            st.warning("No points matching the spatial query.")
+        if points_gdf is None:
+            st.info("Points data not loaded.")
         else:
-            pts = points_to_use.copy()
-            pts["Masculin"] = pd.to_numeric(pts.get("Masculin",0), errors="coerce").fillna(0)
-            pts["Feminin"] = pd.to_numeric(pts.get("Feminin",0), errors="coerce").fillna(0)
-            m_total = int(pts["Masculin"].sum())
-            f_total = int(pts["Feminin"].sum())
+            points_gdf.columns = points_gdf.columns.str.strip()
+            if {"Masculin","Feminin"}.issubset(points_gdf.columns):
+                gdf_idse_simple = gdf_idse.explode(ignore_index=True)
+                pts_inside = safe_sjoin(points_gdf, gdf_idse_simple, predicate="intersects")
+                if pts_inside.empty:
+                    m_total, f_total = 0, 0
+                    st.warning("No points inside selected SE.")
+                else:
+                    pts_inside["Masculin"] = pd.to_numeric(pts_inside["Masculin"], errors="coerce").fillna(0)
+                    pts_inside["Feminin"] = pd.to_numeric(pts_inside["Feminin"], errors="coerce").fillna(0)
+                    m_total = int(pts_inside["Masculin"].sum())
+                    f_total = int(pts_inside["Feminin"].sum())
 
-            st.markdown(f"""
-            - 👨 **M**: {m_total}  
-            - 👩 **F**: {f_total}  
-            - 👥 **Total**: {m_total + f_total}
-            """)
+                st.markdown(f"- 👨 **M**: {m_total}  \n- 👩 **F**: {f_total}  \n- 👥 **Total**: {m_total+f_total}")
 
-            fig, ax = plt.subplots(figsize=(3,3))
-            if m_total + f_total > 0:
-                ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90, textprops={"fontsize":10})
+                fig, ax = plt.subplots(figsize=(3,3))
+                if m_total+f_total > 0:
+                    ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90, textprops={"fontsize":10})
+                else:
+                    ax.pie([1], labels=["No data"], colors=["lightgrey"])
+                ax.axis("equal")
+                st.pyplot(fig)
             else:
-                ax.pie([1], labels=["No data"], colors=["lightgrey"])
-            ax.axis("equal")
-            st.pyplot(fig)
+                st.warning("CSV must have 'Masculin' and 'Feminin' columns.")
 
 # =========================================================
 # FOOTER
