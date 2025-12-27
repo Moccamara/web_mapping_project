@@ -43,7 +43,6 @@ def logout():
 # =========================================================
 # LOGIN
 # =========================================================
-# LOGIN
 if not st.session_state.auth_ok:
     st.sidebar.header("🔐 Login")
     username = st.sidebar.selectbox("User", list(USERS.keys()))
@@ -53,18 +52,10 @@ if not st.session_state.auth_ok:
             st.session_state.auth_ok = True
             st.session_state.username = username
             st.session_state.user_role = USERS[username]["role"]
-            st.stop()  # stops execution; app reruns automatically
+            st.stop()
         else:
             st.sidebar.error("❌ Incorrect password")
     st.stop()
-
-# LOGOUT
-def logout():
-    st.session_state.auth_ok = False
-    st.session_state.username = None
-    st.session_state.user_role = None
-    st.session_state.points_gdf = None
-    st.stop()  # stops execution after logout
 
 # =========================================================
 # LOAD SE POLYGONS
@@ -164,7 +155,7 @@ with st.sidebar:
         st.markdown("### 🛰️ Spatial Query")
         query_type = st.selectbox("Spatial Query Type", ["Points inside selected SE"])
         run_query = st.button("Run Spatial Query")
-        if run_query:
+        if run_query and points_gdf is not None:
             pts_inside_map = safe_sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner")
             st.success(f"✅ Spatial query returned {len(pts_inside_map)} points inside selected SE.")
 
@@ -189,11 +180,7 @@ folium.GeoJson(
 ).add_to(m)
 
 # Add points
-if st.session_state.user_role=="Admin" and pts_inside_map is not None:
-    points_to_plot = pts_inside_map
-else:
-    points_to_plot = points_gdf
-
+points_to_plot = pts_inside_map if (st.session_state.user_role=="Admin" and pts_inside_map is not None) else points_gdf
 if points_to_plot is not None:
     points_to_plot = points_to_plot.to_crs(gdf_idse.crs)
     for _, r in points_to_plot.iterrows():
@@ -268,6 +255,5 @@ with col_chart:
 st.markdown("""
 ---
 **Geospatial Enterprise Web Mapping** Developed with Streamlit, Folium & GeoPandas  
-** CAMARA, PhD – Geomatics Engineering** © 2025
+**Dr. Mahamadou CAMARA, PhD – Geomatics Engineering** © 2025
 """)
-
