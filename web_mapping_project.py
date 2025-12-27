@@ -6,7 +6,6 @@ from folium.plugins import MeasureControl, Draw
 import pandas as pd
 import altair as alt
 import matplotlib.pyplot as plt
-from shapely.geometry import shape
 
 # =========================================================
 # APP CONFIG
@@ -44,6 +43,7 @@ def logout():
 # =========================================================
 # LOGIN
 # =========================================================
+# LOGIN
 if not st.session_state.auth_ok:
     st.sidebar.header("🔐 Login")
     username = st.sidebar.selectbox("User", list(USERS.keys()))
@@ -53,10 +53,18 @@ if not st.session_state.auth_ok:
             st.session_state.auth_ok = True
             st.session_state.username = username
             st.session_state.user_role = USERS[username]["role"]
-            st.stop()
+            st.stop()  # stops execution; app reruns automatically
         else:
             st.sidebar.error("❌ Incorrect password")
     st.stop()
+
+# LOGOUT
+def logout():
+    st.session_state.auth_ok = False
+    st.session_state.username = None
+    st.session_state.user_role = None
+    st.session_state.points_gdf = None
+    st.stop()  # stops execution after logout
 
 # =========================================================
 # LOAD SE POLYGONS
@@ -156,7 +164,7 @@ with st.sidebar:
         st.markdown("### 🛰️ Spatial Query")
         query_type = st.selectbox("Spatial Query Type", ["Points inside selected SE"])
         run_query = st.button("Run Spatial Query")
-        if run_query and points_gdf is not None:
+        if run_query:
             pts_inside_map = safe_sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner")
             st.success(f"✅ Spatial query returned {len(pts_inside_map)} points inside selected SE.")
 
@@ -181,7 +189,11 @@ folium.GeoJson(
 ).add_to(m)
 
 # Add points
-points_to_plot = pts_inside_map if (st.session_state.user_role=="Admin" and pts_inside_map is not None) else points_gdf
+if st.session_state.user_role=="Admin" and pts_inside_map is not None:
+    points_to_plot = pts_inside_map
+else:
+    points_to_plot = points_gdf
+
 if points_to_plot is not None:
     points_to_plot = points_to_plot.to_crs(gdf_idse.crs)
     for _, r in points_to_plot.iterrows():
@@ -197,30 +209,9 @@ folium.LayerControl(collapsed=True).add_to(m)
 # =========================================================
 col_map, col_chart = st.columns((3,1), gap="small")
 with col_map:
-    # Display map and capture drawn polygons
-    map_data = st_folium(m, height=500, returned_objects=["all_drawings"], use_container_width=True)
-
-    # Polygon-based pie chart under map
-    if map_data and "all_drawings" in map_data and map_data["all_drawings"]:
-        last_feature = map_data["all_drawings"][-1]
-        drawn_polygon = shape(last_feature["geometry"])
-        if drawn_polygon is not None and points_gdf is not None:
-            pts_in_polygon = points_gdf[points_gdf.geometry.within(drawn_polygon)]
-            if not pts_in_polygon.empty:
-                m_poly = int(pts_in_polygon["Masculin"].sum()) if "Masculin" in pts_in_polygon.columns else 0
-                f_poly = int(pts_in_polygon["Feminin"].sum()) if "Feminin" in pts_in_polygon.columns else 0
-                st.subheader("🟢 Points inside drawn polygon")
-                st.markdown(f"- 👨 **M**: {m_poly}  \n- 👩 **F**: {f_poly}  \n- 👥 **Total**: {m_poly+f_poly}")
-
-                fig_poly, ax_poly = plt.subplots(figsize=(3,3))
-                ax_poly.pie([m_poly,f_poly], labels=["M","F"], autopct="%1.1f%%", startangle=90)
-                ax_poly.axis("equal")
-                st.pyplot(fig_poly)
-            else:
-                st.info("No points inside drawn polygon.")
+    st_folium(m, height=500, use_container_width=True)
 
 with col_chart:
-    # Existing SE charts remain unchanged
     if idse_selected=="No filter":
         st.info("Select SE.")
     else:
@@ -241,22 +232,35 @@ with col_chart:
                  .properties(height=150))
         st.altair_chart(chart, use_container_width=True)
 
-        # Sex pie chart for SE
+        # Sex pie chart
         st.subheader("👥 Sex (M / F)")
-        if points_gdf is not None and {"Masculin","Feminin"}.issubset(points_gdf.columns):
-            gdf_idse_simple = gdf_idse.explode(ignore_index=True)
-            pts_inside = safe_sjoin(points_gdf, gdf_idse_simple, predicate="intersects")
-            m_total = int(pts_inside["Masculin"].sum()) if not pts_inside.empty else 0
-            f_total = int(pts_inside["Feminin"].sum()) if not pts_inside.empty else 0
-            st.markdown(f"- 👨 **M**: {m_total}  \n- 👩 **F**: {f_total}  \n- 👥 **Total**: {m_total+f_total}")
+        if points_gdf is None:
+            st.info("Points data not loaded.")
+        else:
+            points_gdf.columns = points_gdf.columns.str.strip()
+            if {"Masculin","Feminin"}.issubset(points_gdf.columns):
+                gdf_idse_simple = gdf_idse.explode(ignore_index=True)
+                pts_inside = safe_sjoin(points_gdf, gdf_idse_simple, predicate="intersects")
+                if pts_inside.empty:
+                    m_total, f_total = 0, 0
+                    st.warning("No points inside selected SE.")
+                else:
+                    pts_inside["Masculin"] = pd.to_numeric(pts_inside["Masculin"], errors="coerce").fillna(0)
+                    pts_inside["Feminin"] = pd.to_numeric(pts_inside["Feminin"], errors="coerce").fillna(0)
+                    m_total = int(pts_inside["Masculin"].sum())
+                    f_total = int(pts_inside["Feminin"].sum())
 
-            fig, ax = plt.subplots(figsize=(3,3))
-            if m_total+f_total > 0:
-                ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90)
+                st.markdown(f"- 👨 **M**: {m_total}  \n- 👩 **F**: {f_total}  \n- 👥 **Total**: {m_total+f_total}")
+
+                fig, ax = plt.subplots(figsize=(3,3))
+                if m_total+f_total > 0:
+                    ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90, textprops={"fontsize":10})
+                else:
+                    ax.pie([1], labels=["No data"], colors=["lightgrey"])
+                ax.axis("equal")
+                st.pyplot(fig)
             else:
-                ax.pie([1], labels=["No data"], colors=["lightgrey"])
-            ax.axis("equal")
-            st.pyplot(fig)
+                st.warning("CSV must have 'Masculin' and 'Feminin' columns.")
 
 # =========================================================
 # FOOTER
@@ -264,6 +268,6 @@ with col_chart:
 st.markdown("""
 ---
 **Geospatial Enterprise Web Mapping** Developed with Streamlit, Folium & GeoPandas  
-** MOCCC CAMARA, PhD – Geomatics Engineering** © 2025
+** CAMARA, PhD – Geomatics Engineering** © 2025
 """)
 
