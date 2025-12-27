@@ -201,11 +201,12 @@ col_map, col_chart = st.columns((3,1), gap="small")
 with col_map:
     map_data = st_folium(m, height=500, returned_objects=["all_drawings"], use_container_width=True)
 
-    # POLYGON-BASED SPATIAL QUERY PIE (under map)
+    # POLYGON-BASED SPATIAL QUERY PIE
     if map_data and "all_drawings" in map_data and map_data["all_drawings"]:
+        from shapely.geometry import shape
         for feature in map_data["all_drawings"]["features"]:
             st.session_state.drawn_polygon = shape(feature["geometry"])
-    
+
     if st.session_state.drawn_polygon is not None:
         st.subheader("🟢 Points inside drawn polygon")
         pts_in_polygon = points_gdf[points_gdf.geometry.within(st.session_state.drawn_polygon)]
@@ -277,5 +278,5 @@ with col_chart:
 st.markdown("""
 ---
 **Geospatial Enterprise Web Mapping** Developed with Streamlit, Folium & GeoPandas  
-** CAMARA, PhD – Geomatics Engineering** © 2025
+** Dr.Mahamadou CAMARA, PhD – Geomatics Engineering** © 2025
 """)
