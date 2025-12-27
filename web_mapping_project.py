@@ -87,6 +87,18 @@ except Exception:
     st.stop()
 
 # =========================================================
+# SAFE SPATIAL JOIN FUNCTION
+# =========================================================
+def safe_sjoin(left_gdf, right_gdf, predicate="intersects", how="inner"):
+    left = left_gdf.reset_index(drop=True)
+    right = right_gdf.reset_index(drop=True)
+    # Drop common columns except geometry
+    common_cols = set(left.columns).intersection(right.columns) - {"geometry"}
+    if common_cols:
+        right = right.drop(columns=list(common_cols))
+    return gpd.sjoin(left, right, predicate=predicate, how=how)
+
+# =========================================================
 # SIDEBAR
 # =========================================================
 with st.sidebar:
@@ -106,17 +118,17 @@ gdf_c = gdf_r[gdf_r["cercle"] == cercle]
 commune = st.sidebar.selectbox("Commune", sorted(gdf_c["commune"].dropna().unique()))
 gdf_commune = gdf_c[gdf_c["commune"] == commune]
 
-idse_list = ["No filter"] + sorted(gdf_commune["idse_new"].dropna().unique())
+idse_list = ["No filtre"] + sorted(gdf_commune["idse_new"].dropna().unique())
 idse_selected = st.sidebar.selectbox("Unit_Geo", idse_list)
-gdf_idse = gdf_commune if idse_selected == "No filter" else gdf_commune[gdf_commune["idse_new"] == idse_selected]
+gdf_idse = gdf_commune if idse_selected == "No filtre" else gdf_commune[gdf_commune["idse_new"] == idse_selected]
 
 # =========================================================
-# LOAD POINTS FROM GITHUB
+# LOAD POINTS (from GitHub)
 # =========================================================
 POINTS_URL = "https://raw.githubusercontent.com/Moccamara/web_mapping/master/data/concession.csv"
 
 @st.cache_data(show_spinner=False)
-def load_points_from_github(url):
+def load_points(url):
     try:
         df = pd.read_csv(url)
         if not {"LAT", "LON"}.issubset(df.columns):
@@ -132,35 +144,20 @@ def load_points_from_github(url):
     except:
         return None
 
-# =========================================================
-# POINTS SOURCE LOGIC
-# =========================================================
-points_gdf = st.session_state.points_gdf if st.session_state.points_gdf is not None else load_points_from_github(POINTS_URL)
+points_gdf = load_points(POINTS_URL)
 
 # =========================================================
-# SPATIAL QUERY
+# SPATIAL QUERY OPTION IN SIDEBAR
 # =========================================================
-st.sidebar.markdown("### 🗺️ Spatial Query")
-query_type = st.sidebar.selectbox(
-    "Select query type",
-    ["intersects", "within", "contains"],
-    index=0
-)
-run_query = st.sidebar.button("Run Spatial Query")
-
-spatial_query_points = None
-if run_query and points_gdf is not None:
-    gdf_idse_simple = gdf_idse.explode(ignore_index=True)
-    spatial_query_points = gpd.sjoin(
-        points_gdf,
-        gdf_idse_simple,
-        predicate=query_type,
-        how="inner"
-    )
-    st.sidebar.success(f"{len(spatial_query_points)} points found using '{query_type}' query")
-
-# Points to display on map and in charts
-points_to_use = spatial_query_points if spatial_query_points is not None else points_gdf
+st.sidebar.markdown("### 📍 Spatial Query")
+query_type = st.sidebar.selectbox("Select Query Type", ["All Points", "Inside Selected SE"])
+if st.sidebar.button("Run Query"):
+    if query_type == "All Points":
+        points_to_use = points_gdf.copy() if points_gdf is not None else gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+    else:
+        points_to_use = safe_sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner") if points_gdf is not None else gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
+else:
+    points_to_use = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
 
 # =========================================================
 # MAP
@@ -182,10 +179,9 @@ folium.GeoJson(
 ).add_to(m)
 
 # Add points to map
-if points_to_use is not None:
+if not points_to_use.empty:
     points_to_use = points_to_use.to_crs(gdf_idse.crs)
-    pts_inside_map = gpd.sjoin(points_to_use, gdf_idse, predicate="intersects", how="inner")
-    for _, r in pts_inside_map.iterrows():
+    for _, r in points_to_use.iterrows():
         folium.CircleMarker(
             location=[r.geometry.y, r.geometry.x],
             radius=3,
@@ -202,15 +198,13 @@ folium.LayerControl(collapsed=True).add_to(m)
 # LAYOUT
 # =========================================================
 col_map, col_chart = st.columns((3,1), gap="small")
-
 with col_map:
     st_folium(m, height=500, use_container_width=True)
 
 with col_chart:
-    if idse_selected == "No filter":
+    if idse_selected == "No filtre":
         st.info("Select SE.")
     else:
-        # ----------------- Population Bar Chart -----------------
         st.subheader("📊 Population")
         df_long = gdf_idse[["idse_new","pop_se","pop_se_ct"]].copy()
         df_long["idse_new"] = df_long["idse_new"].astype(str)
@@ -235,15 +229,14 @@ with col_chart:
         )
         st.altair_chart(chart, use_container_width=True)
 
-        # ----------------- Sex Pie Chart -----------------
+        # Sex Pie Chart
         st.subheader("👥 Sex (M / F)")
-        if points_to_use is None:
-            st.info("No points to display.")
+        if points_gdf is None or points_to_use.empty:
+            st.info("No points available for Sex distribution.")
         else:
             points_to_use.columns = points_to_use.columns.str.strip()
             if {"Masculin","Feminin"}.issubset(points_to_use.columns):
-                gdf_idse_simple = gdf_idse.explode(ignore_index=True)
-                pts_inside = gpd.sjoin(points_to_use, gdf_idse_simple, predicate="intersects", how="inner")
+                pts_inside = safe_sjoin(points_to_use, gdf_idse, predicate="intersects", how="inner")
                 if pts_inside.empty:
                     st.warning("No points inside the selected SE.")
                     m_total, f_total = 0, 0
