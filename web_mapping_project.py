@@ -106,12 +106,21 @@ gdf_c = gdf_r[gdf_r["cercle"] == cercle]
 commune = st.sidebar.selectbox("Commune", sorted(gdf_c["commune"].dropna().unique()))
 gdf_commune = gdf_c[gdf_c["commune"] == commune]
 
-idse_list = ["No filter"] + sorted(gdf_commune["idse_new"].dropna().unique())
+idse_list = ["No filtre"] + sorted(gdf_commune["idse_new"].dropna().unique())
 idse_selected = st.sidebar.selectbox("Unit_Geo", idse_list)
-gdf_idse = gdf_commune if idse_selected == "No filter" else gdf_commune[gdf_commune["idse_new"] == idse_selected]
+gdf_idse = gdf_commune if idse_selected == "No filtre" else gdf_commune[gdf_commune["idse_new"] == idse_selected]
 
 # =========================================================
-# LOAD POINTS
+# SPATIAL QUERY TYPE
+# =========================================================
+st.sidebar.markdown("### 📍 Spatial Query Type")
+spatial_query_type = st.sidebar.selectbox(
+    "Select query type",
+    ["Points inside SE", "Points outside SE"]
+)
+
+# =========================================================
+# LOAD CONCESSION POINTS
 # =========================================================
 POINTS_URL = "https://raw.githubusercontent.com/Moccamara/web_mapping/master/data/concession.csv"
 
@@ -135,23 +144,27 @@ def load_points(url):
 points_gdf = load_points(POINTS_URL)
 
 # =========================================================
-# SAFE SPATIAL JOIN
+# SAFE SPATIAL JOIN FUNCTION
 # =========================================================
-def safe_sjoin(left_gdf, right_gdf, predicate="intersects", how="inner"):
-    if left_gdf is None or right_gdf is None or left_gdf.empty or right_gdf.empty:
-        return gpd.GeoDataFrame(columns=left_gdf.columns if left_gdf is not None else [], crs=left_gdf.crs if left_gdf is not None else None)
-    return gpd.sjoin(left_gdf, right_gdf, predicate=predicate, how=how, rsuffix="_right")
+def safe_sjoin(points, polygons, how="inner", predicate="intersects"):
+    if points is None or polygons is None or points.empty or polygons.empty:
+        return gpd.GeoDataFrame(columns=points.columns if points is not None else [], crs=points.crs if points is not None else None)
+    if "index_right" in polygons.columns:
+        polygons = polygons.drop(columns=["index_right"])
+    return gpd.sjoin(points, polygons, predicate=predicate, how=how, rsuffix="_r")
 
 # =========================================================
-# SPATIAL QUERY
+# FILTER POINTS BASED ON SPATIAL QUERY TYPE
 # =========================================================
-st.sidebar.markdown("### 🧭 Spatial Query")
-query_type = st.sidebar.selectbox("Query Type", ["intersects", "within", "contains"])
-if st.sidebar.button("Run Spatial Query"):
-    points_to_use = points_gdf.copy()
-    pts_inside_map = safe_sjoin(points_to_use, gdf_idse, predicate=query_type, how="inner")
+if points_gdf is not None:
+    points_gdf = points_gdf.to_crs(gdf_idse.crs)
+    if spatial_query_type == "Points inside SE":
+        points_to_use = safe_sjoin(points_gdf, gdf_idse)
+    elif spatial_query_type == "Points outside SE":
+        pts_inside = safe_sjoin(points_gdf, gdf_idse)
+        points_to_use = points_gdf[~points_gdf.index.isin(pts_inside.index)]
 else:
-    pts_inside_map = safe_sjoin(points_gdf, gdf_idse, predicate="intersects", how="inner")
+    points_to_use = gpd.GeoDataFrame(columns=[], crs="EPSG:4326")
 
 # =========================================================
 # MAP
@@ -165,6 +178,7 @@ folium.TileLayer(
     attr="Esri",
 ).add_to(m)
 m.fit_bounds([[miny, minx], [maxy, maxx]])
+
 folium.GeoJson(
     gdf_idse,
     name="IDSE",
@@ -172,17 +186,15 @@ folium.GeoJson(
     tooltip=folium.GeoJsonTooltip(fields=["idse_new","pop_se","pop_se_ct"])
 ).add_to(m)
 
-# Add points
-if pts_inside_map is not None and not pts_inside_map.empty:
-    pts_inside_map = pts_inside_map.to_crs(gdf_idse.crs)
-    for _, r in pts_inside_map.iterrows():
-        folium.CircleMarker(
-            location=[r.geometry.y, r.geometry.x],
-            radius=3,
-            color="red",
-            fill=True,
-            fill_opacity=0.8
-        ).add_to(m)
+# Add filtered points
+for _, r in points_to_use.iterrows():
+    folium.CircleMarker(
+        location=[r.geometry.y, r.geometry.x],
+        radius=3,
+        color="red",
+        fill=True,
+        fill_opacity=0.8
+    ).add_to(m)
 
 MeasureControl().add_to(m)
 Draw(export=True).add_to(m)
@@ -197,7 +209,7 @@ with col_map:
     st_folium(m, height=500, use_container_width=True)
 
 with col_chart:
-    if idse_selected == "No filter":
+    if idse_selected == "No filtre":
         st.info("Select SE.")
     else:
         # ----------------- Population Bar Chart -----------------
@@ -227,36 +239,28 @@ with col_chart:
 
         # ----------------- Sex Pie Chart -----------------
         st.subheader("👥 Sex (M / F)")
-        if points_gdf is None:
-            st.info("No points data loaded.")
+        if points_to_use.empty:
+            st.warning("No points matching the spatial query.")
         else:
-            points_gdf.columns = points_gdf.columns.str.strip()
-            if {"Masculin","Feminin"}.issubset(points_gdf.columns):
-                gdf_idse_simple = gdf_idse.explode(ignore_index=True)
-                pts_inside = safe_sjoin(points_gdf, gdf_idse_simple, predicate=query_type, how="inner")
-                if pts_inside.empty:
-                    m_total, f_total = 0, 0
-                else:
-                    pts_inside["Masculin"] = pd.to_numeric(pts_inside["Masculin"], errors="coerce").fillna(0)
-                    pts_inside["Feminin"] = pd.to_numeric(pts_inside["Feminin"], errors="coerce").fillna(0)
-                    m_total = int(pts_inside["Masculin"].sum())
-                    f_total = int(pts_inside["Feminin"].sum())
+            pts = points_to_use.copy()
+            pts["Masculin"] = pd.to_numeric(pts.get("Masculin",0), errors="coerce").fillna(0)
+            pts["Feminin"] = pd.to_numeric(pts.get("Feminin",0), errors="coerce").fillna(0)
+            m_total = int(pts["Masculin"].sum())
+            f_total = int(pts["Feminin"].sum())
 
-                st.markdown(f"""
-                - 👨 **M**: {m_total}  
-                - 👩 **F**: {f_total}  
-                - 👥 **Total**: {m_total + f_total}
-                """)
+            st.markdown(f"""
+            - 👨 **M**: {m_total}  
+            - 👩 **F**: {f_total}  
+            - 👥 **Total**: {m_total + f_total}
+            """)
 
-                fig, ax = plt.subplots(figsize=(3,3))
-                if m_total + f_total > 0:
-                    ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90, textprops={"fontsize":10})
-                else:
-                    ax.pie([1], labels=["No data"], colors=["lightgrey"])
-                ax.axis("equal")
-                st.pyplot(fig)
+            fig, ax = plt.subplots(figsize=(3,3))
+            if m_total + f_total > 0:
+                ax.pie([m_total,f_total], labels=["M","F"], autopct="%1.1f%%", startangle=90, textprops={"fontsize":10})
             else:
-                st.warning("CSV must have 'Masculin' and 'Feminin' columns.")
+                ax.pie([1], labels=["No data"], colors=["lightgrey"])
+            ax.axis("equal")
+            st.pyplot(fig)
 
 # =========================================================
 # FOOTER
